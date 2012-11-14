@@ -1,0 +1,68 @@
+#!/usr/bin/env python
+
+from wsgiref.simple_server import make_server
+from wsgiref.util import *
+
+from BaseHTTPServer import BaseHTTPRequestHandler
+import urlparse
+import json
+import subprocess
+
+become_root = 'sudo'
+
+service = {'manager': 'pdnsmgrd', 'recursor': 'pdns-recursor', 'auth': 'pdns'}
+startstop_command = {'start': 'start', 'stop': 'stop', 'restart': 'restart'}
+
+def startstop(action, target):
+    cmdline = [become_root, 'service', service[target], startstop_command[action]]
+    status = {'success': True}
+    status['output'] = subprocess.check_output(cmdline)
+    return status
+
+def dispatch(action, target):
+    if target not in ['manager', 'recursor', 'auth']:
+        raise Exception('unknown target')
+
+    if action in ['start','stop','restart']:
+        return startstop(action, target)
+    if action == 'upgrade':
+        return upgrade(target)
+    if action == 'configure':
+        return configure(target)
+
+    raise Exception('unknown action')
+
+def simple_app(environ, start_response):
+
+    path = request_uri(environ)
+    parsed_path = urlparse.urlparse(path)
+    args = urlparse.parse_qs(parsed_path.query)
+
+    if parsed_path.path != '/':
+        raise Exception('404')
+
+    action = args['action'][0]
+    target = args['target'][0]
+
+
+    result = dispatch(action, target)
+    body = json.dumps(result)
+
+    headers = []
+    if 'callback' in args:
+        headers.append(('Content-type', 'application/javascript'))
+        body = args['callback'][0] + '(' + body + ');'
+    else:
+        headers.append(('Content-type', 'application/json'))
+
+    start_response("200 OK", headers)
+    return [body]
+
+
+if __name__ == '__main__':
+    port = 8080
+    httpd = make_server('', port, simple_app)
+    print "Serving on port %d ..." % (port,)
+    httpd.serve_forever()
+
+
